@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Creative WebGL Particle System</title>
+    <style>
+        /* Basic reset and styling for the page */
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0a0a1a; /* Dark blue background */
+            font-family: 'Inter', sans-serif;
+            color: white;
+        }
+
+        /* The canvas will fill the entire screen */
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* A small info box to guide the user */
+        #info-box {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            text-align: center;
+            font-size: 14px;
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap" rel="stylesheet">
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <div id="info-box">Move your mouse to interact with the particles</div>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        // This shader runs for every single particle (vertex)
+        // It calculates the final position of the particle on the screen.
+
+        // 'attribute' is data provided from a buffer for each vertex.
+        attribute vec2 a_position; // The initial position of the particle
+        attribute vec2 a_velocity; // The velocity of the particle
+
+        // 'uniform' is data that's the same for all vertices in a draw call.
+        uniform float u_time; // A global time value that increases every frame
+        uniform vec2 u_mousePos; // The current position of the mouse
+        uniform vec2 u_resolution; // The resolution of the canvas
+
+        // 'varying' is data passed from the vertex shader to the fragment shader.
+        varying float v_brightness;
+
+        void main() {
+            // --- Physics Calculation ---
+            // A simple gravitational pull towards the bottom
+            vec2 gravity = vec2(0.0, -0.0001);
+
+            // Calculate the vector from the particle to the mouse
+            vec2 fromMouse = a_position - u_mousePos;
+            float distanceToMouse = length(fromMouse);
+
+            // Create a repulsive force from the mouse
+            // The force is stronger when closer (inverse square law-ish)
+            vec2 mouseForce = normalize(fromMouse) / (distanceToMouse * distanceToMouse * 5.0);
+            
+            // If the particle is too close to the mouse, cap the force to avoid chaos
+            if (distanceToMouse < 0.05) {
+                mouseForce = vec2(0.0);
+            }
+
+            // Update velocity with gravity and mouse force
+            vec2 totalVelocity = a_velocity + gravity * u_time + mouseForce;
+
+            // Calculate the new position based on time and velocity
+            vec2 newPosition = a_position + totalVelocity * u_time;
+            
+            // --- Wrapping Logic ---
+            // If a particle goes off-screen, wrap it to the other side
+            // This creates a continuous, looping effect.
+            newPosition = mod(newPosition + 1.0, 2.0) - 1.0;
+
+            // Set the final position of the vertex. WebGL works in "clip space" from -1 to 1.
+            gl_Position = vec4(newPosition, 0.0, 1.0);
+
+            // Set the size of the particle.
+            gl_PointSize = 2.0;
+
+            // Pass brightness to the fragment shader based on speed
+            v_brightness = clamp(length(totalVelocity) * 20.0, 0.3, 1.0);
+        }
+    </script>
+
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        // This shader runs for every pixel inside a rendered shape (in this case, our points).
+        // Its job is to determine the final color of the pixel.
+        precision mediump float;
+
+        varying float v_brightness;
+
+        void main() {
+            // Create a nice glowing effect by having a bright center and fading out
+            float dist = length(gl_PointCoord - vec2(0.5));
+            float alpha = 1.0 - smoothstep(0.4, 0.5, dist);
+            
+            // Set the final color of the pixel (a cool blue, adjusted by brightness)
+            gl_FragColor = vec4(0.3, 0.6, 1.0, alpha) * v_brightness;
+        }
+    </script>
+
+
+    <script>
+        window.onload = function() {
+            // --- 1. SETUP ---
+            const canvas = document.getElementById('glCanvas');
+            const gl = canvas.getContext('webgl');
+
+            if (!gl) {
+                console.error("WebGL not supported!");
+                document.getElementById('info-box').innerText = "Sorry, your browser doesn't support WebGL.";
+                return;
+            }
+
+            // --- 2. SHADER AND PROGRAM SETUP ---
+
+            // Helper function to create a shader
+            function createShader(gl, type, source) {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    console.error('Error compiling shader:', gl.getShaderInfoLog(shader));
+                    gl.deleteShader(shader);
+                    return null;
+                }
+                return shader;
+            }
+
+            // Get shader source code from the script tags
+            const vertexShaderSource = document.getElementById('vertex-shader').text;
+            const fragmentShaderSource = document.getElementById('fragment-shader').text;
+
+            // Create and link shaders into a WebGL program
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Error linking program:', gl.getProgramInfoLog(program));
+                return;
+            }
+            gl.useProgram(program);
+
+            // --- 3. DATA AND BUFFERS ---
+            const NUM_PARTICLES = 50000;
+            const particleData = new Float32Array(NUM_PARTICLES * 4); // 4 values per particle (x, y, vx, vy)
+
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                // Initial position (randomly spread across the screen)
+                particleData[i * 4 + 0] = Math.random() * 2 - 1; // x (-1 to 1)
+                particleData[i * 4 + 1] = Math.random() * 2 - 1; // y (-1 to 1)
+
+                // Initial velocity (small, random direction)
+                particleData[i * 4 + 2] = (Math.random() - 0.5) * 0.01; // vx
+                particleData[i * 4 + 3] = (Math.random() - 0.5) * 0.01; // vy
+            }
+            
+            // Create a buffer on the GPU and push our data to it
+            const particleBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, particleData, gl.STATIC_DRAW);
+
+            // --- 4. ATTRIBUTES AND UNIFORMS ---
+            
+            // Get the locations of our attributes and uniforms from the shader program
+            const positionAttribLocation = gl.getAttribLocation(program, 'a_position');
+            const velocityAttribLocation = gl.getAttribLocation(program, 'a_velocity');
+            const timeUniformLocation = gl.getUniformLocation(program, 'u_time');
+            const mousePosUniformLocation = gl.getUniformLocation(program, 'u_mousePos');
+            const resolutionUniformLocation = gl.getUniformLocation(program, 'u_resolution');
+
+            // Tell WebGL how to pull the position and velocity data out of the single buffer
+            const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
+            
+            // Position attribute
+            gl.enableVertexAttribArray(positionAttribLocation);
+            gl.vertexAttribPointer(positionAttribLocation, 2, gl.FLOAT, false, stride, 0);
+            
+            // Velocity attribute
+            gl.enableVertexAttribArray(velocityAttribLocation);
+            gl.vertexAttribPointer(velocityAttribLocation, 2, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
+
+            // --- 5. MOUSE INTERACTION & RESIZING ---
+            const mousePos = { x: 0, y: 0 };
+
+            canvas.addEventListener('mousemove', (e) => {
+                // Convert pixel coordinates to WebGL clip space (-1 to 1)
+                mousePos.x = (e.clientX / canvas.width) * 2 - 1;
+                mousePos.y = -(e.clientY / canvas.height) * 2 + 1; // Y is inverted
+            });
+            
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                gl.viewport(0, 0, canvas.width, canvas.height);
+                gl.uniform2f(resolutionUniformLocation, canvas.width, canvas.height);
+            }
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas(); // Initial call
+
+            // --- 6. RENDER LOOP ---
+            
+            // Enable blending for a nice additive color effect
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // (source * alpha) + (dest * 1)
+
+            let startTime = Date.now();
+
+            function animate() {
+                // Clear the canvas
+                gl.clearColor(0.04, 0.04, 0.1, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                
+                // Update uniforms that change every frame
+                const elapsedTime = (Date.now() - startTime) / 1000;
+                gl.uniform1f(timeUniformLocation, elapsedTime);
+                gl.uniform2f(mousePosUniformLocation, mousePos.x, mousePos.y);
+
+                // Draw the particles!
+                gl.drawArrays(gl.POINTS, 0, NUM_PARTICLES);
+
+                // Request the next frame
+                requestAnimationFrame(animate);
+            }
+
+            // Start the animation!
+            animate();
+        };
+    </script>
+</body>
+</html>
